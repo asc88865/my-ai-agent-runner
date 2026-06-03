@@ -1,0 +1,43 @@
+# AI Agent 自托管 Runner 工作流
+#
+# 此工作流使用本机自托管 Runner (reasonix-agent-runner)
+# 可以在本地执行 AI 自动化任务
+
+name: AI Agent Automation
+on:
+  workflow_dispatch:
+    inputs:
+      ai_task:
+        description: 'AI 任务描述'
+        required: true
+        type: string
+
+jobs:
+  ai-agent:
+    runs-on: [self-hosted, windows, ai-agent]
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: 系统信息
+        run: |
+          echo "Runner: ${{ runner.name }}"
+          echo "OS: ${{ runner.os }}"
+          systeminfo | findstr /B /C:"OS Name"
+          python --version
+          node --version
+      
+      - name: AI 分析任务
+        env:
+          TASK: ${{ github.event.inputs.ai_task }}
+        run: |
+          echo "AI 任务: %TASK%"
+          echo "任务已接收，将在本机自托管 Runner 上执行"
+      
+      - name: 生成报告
+        run: |
+          echo "# AI Agent 执行报告" > report.md
+          echo "任务: ${{ github.event.inputs.ai_task }}" >> report.md
+          echo "执行时间: $(date)" >> report.md
+          echo "Runner: ${{ runner.name }}" >> report.md
+          type report.md
