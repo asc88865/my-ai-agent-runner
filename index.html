@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<meta name="theme-color" content="#e94560">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%23e94560'/%3E%3Ctext x='50' y='68' font-size='60' text-anchor='middle' fill='white'%3E🎤%3C/text%3E%3C/svg%3E">
+<title>发语音给 Reasonix</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#1a1a2e;color:#fff;min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:20px}
+.container{text-align:center;width:100%;max-width:400px}
+h1{font-size:22px;margin-bottom:5px;color:#e94560}
+.sub{font-size:13px;color:#888;margin-bottom:25px}
+.mic-box{width:160px;height:160px;margin:0 auto 25px;border-radius:50%;background:#16213e;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:.3s;position:relative;border:4px solid #0f3460;user-select:none;-webkit-user-select:none}
+.mic-box.active{border-color:#e94560;background:#1a1a3e;transform:scale(1.05)}
+.mic-box.recording{animation:pulse 1.5s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(233,69,96,.7)}50%{box-shadow:0 0 0 20px rgba(233,69,96,0)}100%{box-shadow:0 0 0 0 rgba(233,69,96,0)}}
+.mic-icon{font-size:64px;line-height:1}
+.timer{font-size:42px;font-weight:bold;color:#e94560;margin-bottom:20px;font-variant-numeric:tabular-nums}
+.status{min-height:50px;margin-bottom:15px;padding:12px 16px;border-radius:10px;font-size:14px;display:none;word-break:break-all}
+.status.show{display:block}
+.status.info{background:#16213e;color:#aaa}
+.status.ok{background:#1b4332;color:#95d5b2}
+.status.err{background:#4a1c1c;color:#ff9999}
+.btn{display:block;width:100%;padding:16px;margin:8px 0;border:none;border-radius:12px;font-size:16px;cursor:pointer;transition:.2s;font-weight:600}
+.btn-primary{background:#e94560;color:#fff}
+.btn-primary:active{background:#d63851}
+.btn-secondary{background:#16213e;color:#0f3460;border:2px solid #0f3460;color:#fff}
+.btn-secondary:active{background:#0f3460}
+.btn-row{display:flex;gap:10px}
+.btn-row .btn{flex:1}
+#fileInput{display:none}
+.badge{display:inline-block;padding:4px 10px;border-radius:20px;font-size:11px;margin-top:15px}
+.badge.wifi{background:#1b4332;color:#95d5b2}
+.badge.relay{background:#4a1c1c;color:#ff9999}
+.install-hint{font-size:12px;color:#666;margin-top:20px}
+.install-hint a{color:#e94560;text-decoration:none}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🎤 发语音给 Reasonix</h1>
+  <p class="sub" id="modeLabel">检测连接方式...</p>
+
+  <div class="mic-box" id="micBox" onclick="toggleRecord()">
+    <span class="mic-icon" id="micIcon">🎤</span>
+  </div>
+  <div class="timer" id="timer">00</div>
+
+  <div class="status" id="status"></div>
+
+  <button class="btn btn-primary" id="recordBtn" onclick="toggleRecord()">开始录音</button>
+  <div class="btn-row">
+    <button class="btn btn-secondary" onclick="document.getElementById('fileInput').click()">📁 选文件</button>
+    <button class="btn btn-secondary" onclick="sendTestMsg()">💬 发文字</button>
+  </div>
+  <input type="file" id="fileInput" accept="audio/*" onchange="uploadFile(this)">
+
+  <div class="badge wifi" id="modeBadge">同 WiFi 直连</div>
+  <div class="install-hint">⭐ 点浏览器菜单「添加到主屏幕」安装为 App</div>
+</div>
+
+<script>
+// ====== GitHub 配置（首次使用时输入） ======
+const G_OWNER = 'asc88865';
+const G_REPO = 'my-ai-agent-runner';
+const G_BRANCH = 'main';
+
+// ====== 本地配置 ======
+const LOCAL_HOSTS = ['192.168.1.5:8889', 'localhost:8889'];
+
+let mediaRecorder, audioChunks = [], isRecording = false, startTime;
+let useRelay = false;  // false=直连, true=GitHub中转
+
+const els = {
+  micBox: document.getElementById('micBox'),
+  micIcon: document.getElementById('micIcon'),
+  timer: document.getElementById('timer'),
+  status: document.getElementById('status'),
+  recordBtn: document.getElementById('recordBtn'),
+  modeLabel: document.getElementById('modeLabel'),
+  modeBadge: document.getElementById('modeBadge')
+};
+
+function showStatus(msg, type) {
+  els.status.textContent = msg;
+  els.status.className = 'status show ' + type;
+}
+
+async function detectMode() {
+  // 先试试本地直连
+  for (const host of LOCAL_HOSTS) {
+    try {
+      const r = await fetch(`https://${host}/`, { method: 'HEAD', mode: 'no-cors', signal: AbortSignal.timeout(2000) });
+      useRelay = false;
+      els.modeLabel.textContent = '📶 同 WiFi 直连模式';
+      els.modeBadge.className = 'badge wifi';
+      els.modeBadge.textContent = '📶 本地直连';
+      return;
+    } catch(e) {}
+  }
+  // 走 GitHub 中转
+  useRelay = true;
+  els.modeLabel.textContent = '🌐 远程模式 (通过 GitHub 中转)';
+  els.modeBadge.className = 'badge relay';
+  els.modeBadge.textContent = '🌐 GitHub 中转';
+}
+
+// ====== 录音 ======
+async function startRecording() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
+    mediaRecorder = new MediaRecorder(stream, { mimeType: mime });
+    audioChunks = [];
+    mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(audioChunks);
+      sendAudio(blob);
+    };
+    mediaRecorder.start();
+    isRecording = true;
+    startTime = Date.now();
+    els.recordBtn.textContent = '⏹ 停止录音';
+    els.micBox.className = 'mic-box recording';
+    els.micIcon.textContent = '🔴';
+    els.timer.textContent = '00';
+    updateTimer();
+    showStatus('正在录音...', 'info');
+  } catch(e) {
+    showStatus('无法录音: ' + e.message + '，请用文件上传', 'err');
+  }
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
+    mediaRecorder.stream.getTracks().forEach(t => t.stop());
+  }
+  isRecording = false;
+  els.recordBtn.textContent = '🎤 开始录音';
+  els.micBox.className = 'mic-box';
+  els.micIcon.textContent = '🎤';
+}
+
+function toggleRecord() {
+  if (isRecording) stopRecording();
+  else startRecording();
+}
+
+function updateTimer() {
+  if (!isRecording) return;
+  const elapsed = Math.floor((Date.now() - startTime) / 1000);
+  els.timer.textContent = String(elapsed).padStart(2, '0');
+  if (elapsed < 60) requestAnimationFrame(updateTimer);
+}
+
+// ====== 发送音频 ======
+async function sendAudio(blob) {
+  const ext = blob.type.includes('webm') ? '.webm' : '.mp4';
+  const fname = 'voice_' + Date.now() + ext;
+  
+  if (!useRelay) {
+    // 直连本地
+    const form = new FormData();
+    form.append('audio', blob, fname);
+    showStatus('发送中 (本地)...', 'info');
+    try {
+      const r = await fetch('https://192.168.1.5:8889/upload', { method: 'POST', body: form });
+      const msg = await r.text();
+      showStatus(msg, 'ok');
+    } catch(e) {
+      // fallback to relay
+      showStatus('本地失败，切到 GitHub 中转...', 'err');
+      await uploadToGitHub(fname, blob);
+    }
+  } else {
+    await uploadToGitHub(fname, blob);
+  }
+}
+
+function getToken() {
+  let t = localStorage.getItem('gh_token');
+  if (!t) {
+    t = prompt('请输入 GitHub Token (以 github 开头的那串)');
+    if (t) localStorage.setItem('gh_token', t);
+  }
+  return t;
+}
+
+async function uploadToGitHub(fname, blob) {
+  const tok = getToken();
+  if (!tok) { showStatus('❌ 需要 Token', 'err'); return; }
+  
+  showStatus('上传到 GitHub...', 'info');
+  try {
+    const reader = new FileReader();
+    reader.readAsDataURL(blob);
+    reader.onload = async () => {
+      const base64 = reader.result.split(',')[1];
+      const body = {
+        message: '语音: ' + fname,
+        content: base64,
+        branch: G_BRANCH
+      };
+      const r = await fetch(`https://api.github.com/repos/${G_OWNER}/${G_REPO}/contents/voice-inbox/${fname}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': 'token ' + tok,
+          'Content-Type': 'application/json',
+          'Accept': 'application/vnd.github+json'
+        },
+        body: JSON.stringify(body)
+      });
+      if (r.ok) {
+        showStatus('✅ 已上传，等待识别...', 'ok');
+      } else {
+        const err = await r.json();
+        showStatus('❌ 上传失败: ' + (err.message || r.status), 'err');
+      }
+    };
+  } catch(e) {
+    showStatus('❌ 网络错误: ' + e.message, 'err');
+  }
+}
+
+// ====== 文件上传 ======
+function uploadFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  showStatus('上传中 (' + (file.size/1024).toFixed(0) + 'KB)...', 'info');
+  sendAudio(file);
+  input.value = '';
+}
+
+// ====== 发文字 ======
+function sendTestMsg() {
+  const msg = prompt('说点什么:');
+  if (!msg) return;
+  
+  if (!useRelay) {
+    fetch('https://192.168.1.5:8889/upload', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: 'text=' + encodeURIComponent(msg)
+    }).then(r => r.text()).then(t => showStatus(t, 'ok')).catch(() => {
+      sendTextToGitHub(msg);
+    });
+  } else {
+    sendTextToGitHub(msg);
+  }
+}
+
+async function sendTextToGitHub(text) {
+  const tok = getToken();
+  if (!tok) { showStatus('❌ 需要 Token', 'err'); return; }
+  
+  const fname = 'text_' + Date.now() + '.txt';
+  const body = {
+    message: '文字: ' + text.substring(0, 30),
+    content: btoa(unescape(encodeURIComponent(text))),
+    branch: G_BRANCH
+  };
+  try {
+    const r = await fetch(`https://api.github.com/repos/${G_OWNER}/${G_REPO}/contents/voice-inbox/${fname}`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': 'token ' + tok,
+        'Content-Type': 'application/json',
+        'Accept': 'application/vnd.github+json'
+      },
+      body: JSON.stringify(body)
+    });
+    showStatus('✅ 已发送: ' + text, r.ok ? 'ok' : 'err');
+  } catch(e) {
+    showStatus('❌ ' + e.message, 'err');
+  }
+}
+
+// ====== 安装 PWA 提示 ======
+let deferredPrompt;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredPrompt = e;
+  document.querySelector('.install-hint').innerHTML = '📲 <a href="#" onclick="installApp()">点击安装到手机桌面</a>';
+});
+
+async function installApp() {
+  if (deferredPrompt) {
+    deferredPrompt.prompt();
+    const result = await deferredPrompt.userChoice;
+    if (result.outcome === 'accepted') document.querySelector('.install-hint').textContent = '✅ 已安装';
+    deferredPrompt = null;
+  }
+}
+
+// 初始化
+detectMode();
+
+// 注册 Service Worker
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js');
+}
+</script>
+</body>
+</html>
